@@ -4597,9 +4597,9 @@ if __name__ == "__main__":
             print("Telegram token saved in bridge.db.")
             sys.exit(0)
         elif len(sys.argv) > init_idx + 1 and sys.argv[init_idx + 1] == "dc":
-            # Strip 'init' and 'dc' so dc_cli sees only the email/password
+            # Strip 'dc' but keep 'init' so dc_cli sees the command and email/password
             new_args = sys.argv[init_idx + 2:]
-            sys.argv = [sys.argv[0]] + new_args
+            sys.argv = [sys.argv[0], "init"] + new_args
             try:
                 dc_cli.start()
             except SystemExit:
