@@ -4623,8 +4623,17 @@ if __name__ == "__main__":
             if avatar:
                 database.set_config("bot_avatar_path", avatar)
 
-            # Strip 'dc' but keep 'init' so dc_cli sees the command and email/password
             new_args = sys.argv[init_idx + 2:]
+
+            if len(new_args) < 1 or not new_args[0]:
+                email = input("Delta Chat email: ").strip()
+                password = getpass.getpass("Password (input will be hidden): ").strip()
+                new_args = [email, password] if password else [email]
+            elif len(new_args) < 2:
+                password = getpass.getpass("Password (input will be hidden): ").strip()
+                new_args = [new_args[0], password] if password else [new_args]
+
+            # Strip 'dc' but keep 'init' so dc_cli sees the command and email/password
             sys.argv = [sys.argv[0], "init"] + new_args
             try:
                 dc_cli.start()
