@@ -133,7 +133,7 @@ class PermissionChecker:
         admin_tg_id = database.get_config("admin_tg_id")
         if admin_tg_id:
             if not database.is_owner_or_admin(user.id):
-                await update.message.reply_text("❌ Only the bot admin can generate invite links.")
+                await update.effective_message.reply_text("❌ Only the bot admin can generate invite links.")
                 return False
 
         if chat.type != "private":
@@ -141,7 +141,7 @@ class PermissionChecker:
                 try:
                     member = await chat.get_member(user.id)
                     if member.status not in ("administrator", "creator"):
-                        await update.message.reply_text("❌ Only group admins can generate invite links.")
+                        await update.effective_message.reply_text("❌ Only group admins can generate invite links.")
                         return False
                 except Exception:
                     pass
@@ -152,11 +152,11 @@ class PermissionChecker:
         chat = update.effective_chat
         user = update.effective_user
         if chat.type != "private":
-            await update.message.reply_text("❌ Channel commands can only be used in a private chat with the bot.")
+            await update.effective_message.reply_text("❌ Channel commands can only be used in a private chat with the bot.")
             return False
         admin_tg_id = database.get_config("admin_tg_id")
         if admin_tg_id and not database.is_owner_or_admin(user.id):
-            await update.message.reply_text("❌ Only the bot admin can manage channels.")
+            await update.effective_message.reply_text("❌ Only the bot admin can manage channels.")
             return False
         return True
 

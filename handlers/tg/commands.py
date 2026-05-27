@@ -518,9 +518,9 @@ async def _add_channel_bridge(target: str, creator_tg_id: Optional[int] = None) 
         invite_link = qr_generator.normalize_qr_data(invite_link)
 
         if resolved_username:
-            row_id = database.add_channel(resolved_username, dc_chat_id, invite_link, created_by_tg_id)
+            row_id = database.add_channel(resolved_username, dc_chat_id, invite_link, creator_tg_id)
         else:
-            row_id = database.add_channel_by_id(tg_channel_id, dc_chat_id, invite_link, None, created_by_tg_id)
+            row_id = database.add_channel_by_id(tg_channel_id, dc_chat_id, invite_link, None, creator_tg_id)
 
         if row_id:
             rate_limiter.register_history_cooldown(dc_chat_id)
