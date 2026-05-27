@@ -16,6 +16,7 @@ from rate_limiter import rate_limiter
 from userbot_manager import userbot_manager
 from channel_history import channel_history_service
 from qrcode_gen import qr_generator
+from handlers.dc.commands import _add_dc_to_tg_bridge, _process_dc_invite_link
 from shared import get_tg_help_text
 
 logger = logging.getLogger("tg_dc_bridge")
@@ -570,6 +571,27 @@ async def tg_channeladd_command(update: Update, context: ContextTypes.DEFAULT_TY
         return
 
     raw_arg = context.args[0].strip()
+
+    is_dc_link = raw_arg.startswith("https://i.delta.chat/") or raw_arg.startswith("OPEN-CHAT:") or raw_arg.startswith("OPEN:")
+
+    if is_dc_link:
+        status_msg = await update.effective_message.reply_text("⏳ Processing DC→TG channel bridge...")
+        try:
+            dc_chat_id, dc_chat_name = _process_dc_invite_link(
+                app_ctx.dc_bot, app_ctx.dc_accid, raw_arg
+            )
+        except ValueError as e:
+            await status_msg.edit_text(f"❌ {e}")
+            return
+
+        tg_target = context.args[1].strip() if len(context.args) > 1 else None
+        result_html, _ = await _add_dc_to_tg_bridge(
+            app_ctx.dc_bot, app_ctx.dc_accid, dc_chat_id, dc_chat_name,
+            tg_target, creator_tg_id=update.effective_user.id
+        )
+        await status_msg.edit_text(result_html, parse_mode='HTML', disable_web_page_preview=True)
+        return
+
     status_msg = await update.effective_message.reply_text("⏳ Processing bridge request...")
 
     result = await _add_channel_bridge(raw_arg, creator_tg_id=update.effective_user.id)

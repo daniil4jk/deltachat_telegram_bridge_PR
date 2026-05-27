@@ -102,7 +102,10 @@ async def _add_dc_to_tg_bridge(bot, accid, dc_chat_id, dc_chat_name, tg_target, 
             except Exception:
                 tg_invite_link = f"https://t.me/c/{str(tg_channel_id).replace('-100', '')}"
         except Exception as e:
-            return f"❌ Could not resolve TG channel: {html.escape(str(e))}", None
+            err_msg = str(e)
+            if "Chat not found" in err_msg:
+                err_msg = "Bot is not a member of this TG channel. Add the bot as admin first."
+            return f"❌ Could not resolve TG channel: {html.escape(err_msg)}", None
     else:
         if not (app_ctx.userbot_client and app_ctx.userbot_client.is_connected()):
             return (
@@ -133,6 +136,45 @@ async def _add_dc_to_tg_bridge(bot, accid, dc_chat_id, dc_chat_name, tg_target, 
         f"<i>Messages from this DC chat will now be relayed to the TG channel.</i>"
     )
     return result, tg_invite_link
+
+
+def _process_dc_invite_link(bot, accid, dc_link):
+    """Process a DC invite link, join the chat if needed.
+
+    Returns (dc_chat_id, dc_chat_name) on success.
+    Raises ValueError with a user-friendly message on failure.
+    """
+    if dc_link.startswith("OPEN-CHAT:"):
+        dc_link = "https://i.delta.chat/#" + dc_link[len("OPEN-CHAT:"):]
+    elif dc_link.startswith("OPEN:"):
+        dc_link = "https://i.delta.chat/#" + dc_link[len("OPEN:"):]
+
+    qr_info = bot.rpc.check_qr(accid, dc_link)
+    if not qr_info:
+        raise ValueError("Invalid DC invite link.")
+
+    kind = qr_info.get('kind')
+    if kind in ('askJoinBroadcast', 'askVerifyGroup'):
+        dc_chat_id = bot.rpc.secure_join(accid, dc_link)
+    elif kind == 'askVerifyContact':
+        raise ValueError("This is a contact invite link, not a group/channel invite.")
+    elif kind:
+        raise ValueError(f"Unsupported link type: {kind}.")
+    else:
+        dc_chat_id = qr_info.get('chat_id') or qr_info.get('id')
+        if not dc_chat_id:
+            raise ValueError("Link does not point to a chat.")
+
+    dc_chat_id = int(dc_chat_id)
+
+    dc_chat_name = str(dc_chat_id)
+    try:
+        info = bot.rpc.get_basic_chat_info(accid, dc_chat_id)
+        dc_chat_name = info.get("name") or dc_chat_name
+    except Exception:
+        pass
+
+    return dc_chat_id, dc_chat_name
 
 
 async def _add_channel_bridge(target: str, creator_tg_id: Optional[int] = None) -> str:
@@ -464,56 +506,13 @@ def dc_channeladd_command(bot, accid, event):
             message_relay.dc_send_msg(bot, accid, msg.chat_id, MsgData(text="⏳ Processing DC→TG channel bridge..."))
             parts = payload.split(None, 1)
             dc_link = parts[0]
-
-            if dc_link.startswith("OPEN-CHAT:"):
-                dc_link = "https://i.delta.chat/#" + dc_link[len("OPEN-CHAT:"):]
-            elif dc_link.startswith("OPEN:"):
-                dc_link = "https://i.delta.chat/#" + dc_link[len("OPEN:"):]
-
             tg_target = parts[1] if len(parts) > 1 else None
 
             try:
-                qr_info = bot.rpc.check_qr(accid, dc_link)
-            except Exception as e:
-                message_relay.dc_send_msg(bot, accid, msg.chat_id, MsgData(text=f"❌ Could not decode DC link: {e}"))
+                dc_chat_id, dc_chat_name = _process_dc_invite_link(bot, accid, dc_link)
+            except ValueError as e:
+                message_relay.dc_send_msg(bot, accid, msg.chat_id, MsgData(text=f"❌ {e}"))
                 return
-
-            if not qr_info:
-                message_relay.dc_send_msg(bot, accid, msg.chat_id, MsgData(text="❌ Invalid DC invite link."))
-                return
-
-            kind = qr_info.get('kind')
-            if kind:
-                if kind in ('askJoinBroadcast', 'askVerifyGroup'):
-                    try:
-                        dc_chat_id = bot.rpc.secure_join(accid, dc_link)
-                    except Exception as e:
-                        message_relay.dc_send_msg(bot, accid, msg.chat_id, MsgData(text=f"❌ Could not join chat: {e}"))
-                        return
-                elif kind == 'askVerifyContact':
-                    message_relay.dc_send_msg(bot, accid, msg.chat_id, MsgData(text="❌ This is a contact invite link, not a group/channel invite."))
-                    return
-                else:
-                    message_relay.dc_send_msg(bot, accid, msg.chat_id, MsgData(text=f"❌ Unsupported link type: {kind}."))
-                    return
-            else:
-                dc_chat_id = qr_info.get('chat_id') or qr_info.get('id')
-                if not dc_chat_id:
-                    message_relay.dc_send_msg(bot, accid, msg.chat_id, MsgData(text="❌ Link does not point to a chat."))
-                    return
-
-            try:
-                dc_chat_id = int(dc_chat_id)
-            except (ValueError, TypeError):
-                message_relay.dc_send_msg(bot, accid, msg.chat_id, MsgData(text="❌ Invalid chat ID from link."))
-                return
-
-            dc_chat_name = str(dc_chat_id)
-            try:
-                info = bot.rpc.get_basic_chat_info(accid, dc_chat_id)
-                dc_chat_name = info.get("name") or dc_chat_name
-            except Exception:
-                pass
 
             result_html, _ = await _add_dc_to_tg_bridge(
                 bot, accid, dc_chat_id, dc_chat_name, tg_target,
