@@ -484,13 +484,13 @@ def dc_channeladd_command(bot, accid, event):
 
             kind = qr_info.get('kind')
             if kind:
-                if kind in ('AskJoinBroadcast', 'AskVerifyGroup'):
+                if kind in ('askJoinBroadcast', 'askVerifyGroup'):
                     try:
                         dc_chat_id = bot.rpc.secure_join(accid, dc_link)
                     except Exception as e:
                         message_relay.dc_send_msg(bot, accid, msg.chat_id, MsgData(text=f"❌ Could not join chat: {e}"))
                         return
-                elif kind == 'AskVerifyContact':
+                elif kind == 'askVerifyContact':
                     message_relay.dc_send_msg(bot, accid, msg.chat_id, MsgData(text="❌ This is a contact invite link, not a group/channel invite."))
                     return
                 else:
