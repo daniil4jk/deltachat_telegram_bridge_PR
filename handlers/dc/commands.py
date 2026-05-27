@@ -464,14 +464,16 @@ def dc_channeladd_command(bot, accid, event):
             message_relay.dc_send_msg(bot, accid, msg.chat_id, MsgData(text="⏳ Processing DC→TG channel bridge..."))
             parts = payload.split(None, 1)
             dc_link = parts[0]
+
+            if dc_link.startswith("OPEN-CHAT:"):
+                dc_link = "https://i.delta.chat/#" + dc_link[len("OPEN-CHAT:"):]
+            elif dc_link.startswith("OPEN:"):
+                dc_link = "https://i.delta.chat/#" + dc_link[len("OPEN:"):]
+
             tg_target = parts[1] if len(parts) > 1 else None
 
-            qr_data = dc_link
-            if qr_data.startswith("https://i.delta.chat/#"):
-                qr_data = qr_data[len("https://i.delta.chat/#"):]
-
             try:
-                qr_info = bot.rpc.check_qr(accid, qr_data)
+                qr_info = bot.rpc.check_qr(accid, dc_link)
             except Exception as e:
                 message_relay.dc_send_msg(bot, accid, msg.chat_id, MsgData(text=f"❌ Could not decode DC link: {e}"))
                 return
@@ -480,10 +482,26 @@ def dc_channeladd_command(bot, accid, event):
                 message_relay.dc_send_msg(bot, accid, msg.chat_id, MsgData(text="❌ Invalid DC invite link."))
                 return
 
-            dc_chat_id = qr_info.get('chat_id') or qr_info.get('id')
-            if not dc_chat_id:
-                message_relay.dc_send_msg(bot, accid, msg.chat_id, MsgData(text="❌ Link does not point to a chat."))
-                return
+            kind = qr_info.get('kind')
+            if kind:
+                if kind in ('AskJoinBroadcast', 'AskVerifyGroup'):
+                    try:
+                        dc_chat_id = bot.rpc.secure_join(accid, dc_link)
+                    except Exception as e:
+                        message_relay.dc_send_msg(bot, accid, msg.chat_id, MsgData(text=f"❌ Could not join chat: {e}"))
+                        return
+                elif kind == 'AskVerifyContact':
+                    message_relay.dc_send_msg(bot, accid, msg.chat_id, MsgData(text="❌ This is a contact invite link, not a group/channel invite."))
+                    return
+                else:
+                    message_relay.dc_send_msg(bot, accid, msg.chat_id, MsgData(text=f"❌ Unsupported link type: {kind}."))
+                    return
+            else:
+                dc_chat_id = qr_info.get('chat_id') or qr_info.get('id')
+                if not dc_chat_id:
+                    message_relay.dc_send_msg(bot, accid, msg.chat_id, MsgData(text="❌ Link does not point to a chat."))
+                    return
+
             try:
                 dc_chat_id = int(dc_chat_id)
             except (ValueError, TypeError):
