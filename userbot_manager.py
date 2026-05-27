@@ -124,7 +124,7 @@ class UserbotManager:
             invite_users=True, ban_users=True, add_admins=True,
             manage_call=True, other=True
         )
-        await userbot_client(EditAdminRequest(channel, bot_entity, rights))
+        await userbot_client(EditAdminRequest(channel, bot_entity, rights, rank=""))
 
         invite = await userbot_client(ExportChatInviteRequest(channel))
         return tg_channel_id, invite.link
