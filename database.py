@@ -65,6 +65,7 @@ class Database:
                 created_at INTEGER DEFAULT (strftime(\'%s\',\'now\')))''')
             self._add_column_if_missing(c, 'bridges', 'created_by_tg_id', 'INTEGER')
             self._add_column_if_missing(c, 'channels', 'created_by_tg_id', 'INTEGER')
+            self._add_column_if_missing(c, 'channels', 'tg_participants_count', 'INTEGER DEFAULT 0')
             self._add_column_if_missing(c, 'bridges', 'reactions_count', 'INTEGER DEFAULT 0')
             self._add_column_if_missing(c, 'message_map', 'content_hash', 'TEXT')
             c.execute('''CREATE TABLE IF NOT EXISTS dc_channels (
