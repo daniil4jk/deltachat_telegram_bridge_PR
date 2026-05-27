@@ -44,7 +44,7 @@ def get_dc_help_text(bot, accid, sender_email, from_id):
         help_text += (
             f"\n**Channel Management (Owner only):**\n"
             f"/channeladd @name or ID — Bridge a TG channel/group (bot as admin or Userbot)\n"
-            f"/channelremove N — Remove a channel bridge\n"
+            f"/channelremove N [tg|dc] — Remove a channel bridge (add dc for DC→TG channels)\n"
             f"/channels — List bridged channels\n"
             f"/userbotjoin <link> — Join channel via Userbot (no admin needed)\n"
             f"\n**Bridge Management (Owner only):**\n"
@@ -547,40 +547,78 @@ def dc_channelremove_command(bot, accid, event):
         return
 
     if not payload:
-        message_relay.dc_send_msg(bot, accid, msg.chat_id, MsgData(text="Usage: /channelremove N (channel number)"))
+        message_relay.dc_send_msg(bot, accid, msg.chat_id, MsgData(text="Usage: /channelremove N [tg|dc] (channel number, optionally specify tg or dc direction)"))
         return
 
+    parts = payload.split()
     try:
-        channel_id = int(payload)
-
-        ch = database.get_channel_by_id(channel_id)
-        if ch:
-            tg_channel_id = database.remove_channel(channel_id)
-            if tg_channel_id:
-                rate_limiter.clear_caches(ch['dc_chat_id'])
-                if app_ctx.main_loop:
-                    asyncio.run_coroutine_threadsafe(userbot_manager.leave_chat(tg_channel_id), app_ctx.main_loop)
-                message_relay.dc_send_msg(bot, accid, msg.chat_id, MsgData(text=f"✅ TG→DC channel bridge #{channel_id} removed."))
-            else:
-                message_relay.dc_send_msg(bot, accid, msg.chat_id, MsgData(text=f"❌ Failed to remove channel #{channel_id}."))
-            return
-
-        dc_ch = database.get_dc_channel_by_id(channel_id)
-        if dc_ch:
-            dc_chat_id = dc_ch['dc_chat_id']
-            tg_channel_id = database.remove_dc_channel(dc_chat_id)
-            if tg_channel_id:
-                rate_limiter.clear_caches(dc_chat_id)
-                if app_ctx.main_loop:
-                    asyncio.run_coroutine_threadsafe(userbot_manager.leave_chat(tg_channel_id), app_ctx.main_loop)
-                message_relay.dc_send_msg(bot, accid, msg.chat_id, MsgData(text=f"✅ DC→TG channel bridge #{channel_id} removed."))
-            else:
-                message_relay.dc_send_msg(bot, accid, msg.chat_id, MsgData(text=f"❌ Failed to remove DC→TG channel #{channel_id}."))
-            return
-
-        message_relay.dc_send_msg(bot, accid, msg.chat_id, MsgData(text=f"❌ Channel #{channel_id} not found."))
+        channel_id = int(parts[0])
     except ValueError:
         message_relay.dc_send_msg(bot, accid, msg.chat_id, MsgData(text="❌ Invalid channel number."))
+        return
+
+    direction = parts[1].lower() if len(parts) > 1 else None
+    if direction and direction not in ("tg", "dc"):
+        message_relay.dc_send_msg(bot, accid, msg.chat_id, MsgData(text="❌ Unknown direction. Use `/channelremove N tg` or `/channelremove N dc`."))
+        return
+
+    if direction == "tg":
+        ch = database.get_channel_by_id(channel_id)
+        if not ch:
+            message_relay.dc_send_msg(bot, accid, msg.chat_id, MsgData(text=f"❌ TG→DC channel #{channel_id} not found."))
+            return
+        tg_channel_id = database.remove_channel(channel_id)
+        if tg_channel_id:
+            rate_limiter.clear_caches(ch['dc_chat_id'])
+            if app_ctx.main_loop:
+                asyncio.run_coroutine_threadsafe(userbot_manager.leave_chat(tg_channel_id), app_ctx.main_loop)
+            message_relay.dc_send_msg(bot, accid, msg.chat_id, MsgData(text=f"✅ TG→DC channel bridge #{channel_id} removed."))
+        else:
+            message_relay.dc_send_msg(bot, accid, msg.chat_id, MsgData(text=f"❌ Failed to remove TG→DC channel #{channel_id}."))
+        return
+
+    if direction == "dc":
+        dc_ch = database.get_dc_channel_by_id(channel_id)
+        if not dc_ch:
+            message_relay.dc_send_msg(bot, accid, msg.chat_id, MsgData(text=f"❌ DC→TG channel #{channel_id} not found."))
+            return
+        dc_chat_id = dc_ch['dc_chat_id']
+        tg_channel_id = database.remove_dc_channel(dc_chat_id)
+        if tg_channel_id:
+            rate_limiter.clear_caches(dc_chat_id)
+            if app_ctx.main_loop:
+                asyncio.run_coroutine_threadsafe(userbot_manager.leave_chat(tg_channel_id), app_ctx.main_loop)
+            message_relay.dc_send_msg(bot, accid, msg.chat_id, MsgData(text=f"✅ DC→TG channel bridge #{channel_id} removed."))
+        else:
+            message_relay.dc_send_msg(bot, accid, msg.chat_id, MsgData(text=f"❌ Failed to remove DC→TG channel #{channel_id}."))
+        return
+
+    ch = database.get_channel_by_id(channel_id)
+    if ch:
+        tg_channel_id = database.remove_channel(channel_id)
+        if tg_channel_id:
+            rate_limiter.clear_caches(ch['dc_chat_id'])
+            if app_ctx.main_loop:
+                asyncio.run_coroutine_threadsafe(userbot_manager.leave_chat(tg_channel_id), app_ctx.main_loop)
+            message_relay.dc_send_msg(bot, accid, msg.chat_id, MsgData(text=f"✅ TG→DC channel bridge #{channel_id} removed."))
+        else:
+            message_relay.dc_send_msg(bot, accid, msg.chat_id, MsgData(text=f"❌ Failed to remove channel #{channel_id}."))
+        return
+
+    dc_ch = database.get_dc_channel_by_id(channel_id)
+    if dc_ch:
+        dc_chat_id = dc_ch['dc_chat_id']
+        tg_channel_id = database.remove_dc_channel(dc_chat_id)
+        if tg_channel_id:
+            rate_limiter.clear_caches(dc_chat_id)
+            if app_ctx.main_loop:
+                asyncio.run_coroutine_threadsafe(userbot_manager.leave_chat(tg_channel_id), app_ctx.main_loop)
+            message_relay.dc_send_msg(bot, accid, msg.chat_id, MsgData(text=f"✅ DC→TG channel bridge #{channel_id} removed."))
+        else:
+            message_relay.dc_send_msg(bot, accid, msg.chat_id, MsgData(text=f"❌ Failed to remove DC→TG channel #{channel_id}."))
+        return
+
+    message_relay.dc_send_msg(bot, accid, msg.chat_id, MsgData(text=f"❌ Channel #{channel_id} not found."))
 
 
 @app_ctx.dc_cli.on(events.NewMessage(command="/bridge"))
@@ -943,7 +981,8 @@ def channels_command_dc(bot, accid, event):
             except Exception:
                 dc_sub_count = "?"
             link = ch.get('tg_invite_link', 'No link')
-            lines.append(f"• **{name}** — 💬 {m_count} — 👤 {dc_sub_count} DC\n  🔗 {link}")
+            lines.append(f"**#{ch['id']}** — **{name}** — 💬 {m_count} — 👤 {dc_sub_count} DC\n  🔗 {link}")
+        lines.append("\nUse `/channelremove N dc` to remove.")
         message_relay.dc_send_msg(bot, accid, chat_id, MsgData(text="\n".join(lines)))
 
     else:
