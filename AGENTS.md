@@ -1,89 +1,53 @@
 # AGENTS.md — Delta Chat ↔ Telegram Bridge
 
-## Architecture
+## Entry point & architecture
 
-Single-file bot (`bot.py`, ~5025 lines) plus `database.py` (SQLite wrapper). No tests, lint, or typecheck config. CI is a push-only webhook that notifies a changelog service — no test runs.
+- **Entry point**: `bot.py` runs `python bot.py serve`. `bot.py` calls `handle_init()` for `init` subcommands, then `asyncio.run(main.main())`.
+- **28 `.py` files**, ~5811 lines. Largest: `handlers/dc/commands.py` (934), `handlers/tg/commands.py` (907), `database.py` (646).
+- **`handlers/dc/`** (3 files, 1479 lines) — DC commands, messaging, events. **`handlers/tg/`** (3 files, 1521 lines) — TG commands, messaging, events.
+- **`dc_handlers.py` / `tg_handlers.py`** are thin re-export stubs (6 / 4 lines) — `from handlers.dc.commands import *`, etc. **Must be imported** for the `@app_ctx.dc_cli.on()` / `@app_ctx.tg_app.add_handler()` decorators inside submodules to fire.
+- **`main.py`**: lazy-imports handlers inside `_import_handlers()` (line 37). At import time, the `handlers/dc/*` decorators register DC commands on `app_ctx.dc_cli`. TG handlers are registered explicitly in `_register_handlers()` (line 56).
+- **No tests, no lint, no typecheck config.** CI is a changelog-only workflow — no test runs.
+- **`database.py`**: single `Database` class + `@contextmanager` for `_conn()` (yields cursor). All 59 legacy module-level functions are preserved as thin wrappers. **Sync** (`threading.Lock`), no async. Do NOT call from async code without `run_in_executor`.
+- **`app_context.py`**: module-level `app_ctx = AppContext()`. The `BotCli("tgbridge")` constructor runs at import time — on Python ≥3.14 it may crash due to argparse help-string incompatibility.
+- **`shared.py`**: extracted to break circular imports. Contains `_inline_links`, `to_dc_markdown`, `get_tg_help_text`.
 
-- **Delta Chat**: `deltabot-cli` (`BotCli`) runs in a background thread via `loop.run_in_executor`
-- **Telegram**: `python-telegram-bot` `Application` with polling
-- **Userbot (optional)**: Telethon client for bridging channels without admin permissions
-
-## Key commands
-
-```bash
-# Run
-python bot.py serve
-docker compose run --rm bridge python bot.py serve   # Docker
-
-# Init (all persistent in bridge.db)
-python bot.py init dc <email> [password]       # DC account
-python bot.py init tg [token]                  # TG token (interactive if omitted)
-python bot.py init admin_tg <id>               # TG admin for error logs
-python bot.py init admin_dc <email>            # DC admin
-python bot.py init api_id <id>                 # Userbot MTProto API ID
-python bot.py init api_hash <hash>             # Userbot MTProto API hash
-python bot.py init userbot                     # Interactive userbot sign-in
-python bot.py init transport <uri|addr>        # Add backup mail relay
-python bot.py init transport <addr> <password>
-
-# Running bot commands (Docker)
-docker compose exec bridge python bot.py link
-docker compose exec bridge python bot.py list
-docker compose exec bridge python bot.py config
-docker compose exec bridge python bot.py --account ID remove
-docker compose exec bridge python bot.py admin
-```
-
-## Docker
+## Running & init
 
 ```bash
-docker compose up -d                          # Start
-docker compose up -d --build                  # Rebuild & update
-docker compose down                           # Stop
-docker compose logs -f                        # Live logs
-docker compose run --rm bridge python bot.py init ...   # One-off commands
+python bot.py serve                  # local (requires venv)
+docker compose up -d                 # Docker (recommended)
+docker compose run --rm bridge python bot.py init ...   # one-off init
 ```
 
-The Dockerfile uses `python:3.11-slim` and builds with `HOST_UID`/`HOST_GID` from `.env`. Volumes: `bridge.db`, `userbot_session.session`, `~/.config/tgbridge`.
-
-## Security
-
-- `bridge.db` stores the TG bot token **in plaintext** (protect with `chmod 600`)
-- `userbot_session.session` is a Telethon session file — a "master key" to the user's TG account. Never share.
-- Setting an `admin_tg` or `admin_dc` locks management commands to owner-only ("Private mode")
-- Each bridge also stores `created_by_tg_id` — sub-admins only see/edit their own bridges
+All persistent state lives in `bridge.db` (SQLite). Init commands (`bot.py:INIT_DISPATCH`):
+- `init dc <email> [password]` — prompted for display name & avatar
+- `init tg [token]` — prompted if omitted
+- `init admin_tg <id>` / `init admin_dc <email>` — locks management to owner
+- `init api_id <id>` / `init api_hash <hash>` — Userbot MTProto credentials
+- `init userbot` — interactive Telethon sign-in (creates `userbot_session.session`)
+- `init transport <uri|addr> [password]` — backup mail relay
 
 ## Key behaviors
 
 | Behavior | Detail |
 |---|---|
-| Rate limits | 30 msg/min per chat, 60 msg/min global DC, 5 deletions/60s |
-| Edit debounce | 60s debounce per (chat, msg_id) to suppress link-preview edits |
+| Rate limits | 30 msg/min per chat, 60 msg/min global DC (`constants.py`), 5 deletions/60s |
+| Edit debounce | 60s debounce per (chat, msg_id) — suppresses link-preview edits |
 | Double-bridge dedup | In-memory `_processed_tg_msgs` dict (120s TTL) |
-| History relay | Last 3 posts relayed on bridge creation & new member join (5min cooldown) |
-| Group→supergroup migration | Auto-detected via `migrate_to_chat_id`, all DB refs updated |
-| Transient error suppression | Specific network errors filtered from admin notifications |
+| History relay | Last 3 posts on bridge creation & new member join (5min cooldown) |
+| Group→supergroup | Auto-detected via `migrate_to_chat_id`, all DB refs updated |
+| Transient errors | Filtered from admin notifications (`TRANSIENT_POLLING_ERRORS` in `constants.py`) |
 | DC→TG deletion sync | Skipped for channel broadcasts; exempts bot-initiated deletes (edit replacements) |
 | Userbot watchdog | Health check every 60s, auto-restarts on failure |
 
-## DC→TG channel bridge
+## Critical constraints
 
-`/channeladd https://i.delta.chat/#... [TG_target]` on the DC side bridges a DC chat to a Telegram channel.
-- If `TG_target` is provided (username, numeric ID, or invite link) — uses existing channel (bot must be admin)
-- If `TG_target` is omitted and Userbot is configured — creates a private TG channel automatically
-- If neither, returns an error prompting one of the two options
-- `dc_channels` table stores the mapping; `message_map` tracks individual messages for edit/deletion sync
-- `/channels dc` lists DC→TG bridges; `/channels tg` lists TG→DC bridges
-
-## Database (`bridge.db`)
-
-Auto-created on import. Schema has migrations via `ALTER TABLE ADD COLUMN` with try/except. Tables: `bridges`, `config`, `message_map`, `polls`, `channels`, `dc_channels`, `admins`, `transport_stats`. Old message map rows pruned to 10K on init; periodic cleanup every hour.
-
-## Notable constraints
-
-- TG bot must have **Group Privacy disabled** in BotFather to read group messages
-- For reaction bridging (TG→DC), bot must be group **administrator**
-- Videos >20MB use lower-resolution fallback from Telegram's `qualities`
-- Media >50MB are rejected from Userbot downloads
-- `set_admin.py` is a standalone CLI script for managing DC admin credentials
-- Requires Python 3.9+
+- **TG bot must have Group Privacy disabled** in BotFather to read group messages
+- **For reaction bridging (TG→DC)**, bot must be group **administrator**
+- **`main.py` uses lazy imports** inside `main()` (line 37) to avoid circular imports. Always keep handler imports lazy.
+- **`app_context.py`**: `BotCli("tgbridge")` triggers at import — may crash on Python 3.14+.
+- **`database.py` `_conn()` yields cursor, not connection.** All `c.execute()`, `c.fetchone()`, `c.fetchall()`, `c.lastrowid` work. Do NOT change to yielding `sqlite3.Connection`.
+- Videos >20MB use lower-resolution fallback. Media >50MB rejected from Userbot downloads.
+- `set_admin.py` is a standalone CLI for DC admin credential management — does NOT import `app_context`.
+- Requires **Python 3.9+** (Docker uses `python:3.11-slim`).
