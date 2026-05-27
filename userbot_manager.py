@@ -51,19 +51,19 @@ class UserbotManager:
                     app_ctx.userbot_client = None
 
             logger.info("Initializing new Telethon Userbot client...")
-            app_ctx.userbot_client = TelegramClient('userbot_session', int(api_id), api_hash, sequential_updates=False)
+            app_ctx.userbot_client = TelegramClient('userbot_session', int(api_id), api_hash, sequential_updates=True)
 
             @app_ctx.userbot_client.on(tg_events.NewMessage())
             async def on_new_userbot_msg(event):
-                asyncio.create_task(self._process_event(event, is_edit=False))
+                await self._process_event(event, is_edit=False)
 
             @app_ctx.userbot_client.on(tg_events.MessageEdited())
             async def on_edited_userbot_msg(event):
-                asyncio.create_task(self._process_event(event, is_edit=True))
+                await self._process_event(event, is_edit=True)
 
             @app_ctx.userbot_client.on(tg_events.MessageDeleted())
             async def on_deleted_userbot_msg(event):
-                asyncio.create_task(self._process_deletion(event))
+                await self._process_deletion(event)
 
             await app_ctx.userbot_client.start()
             logger.info("Telethon Userbot client started successfully.")
@@ -394,7 +394,9 @@ class UserbotManager:
             return
 
         from relay import message_relay
-        await message_relay.relay_userbot_message(dc_chat_id, msg, is_edit=is_edit)
+        from message_queue import ordered_queue
+        await ordered_queue.enqueue(f"dc:{dc_chat_id}",
+            message_relay.relay_userbot_message(dc_chat_id, msg, is_edit=is_edit))
 
     async def _process_deletion(self, event):
         if not app_ctx.dc_bot or not app_ctx.dc_accid:

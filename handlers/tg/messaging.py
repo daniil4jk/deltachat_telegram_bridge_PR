@@ -13,6 +13,7 @@ from rate_limiter import rate_limiter
 from relay import message_relay
 from edit_sync import edit_sync_service
 from media_handler import media_handler
+from message_queue import ordered_queue, file_tracker
 from shared import _inline_links
 
 logger = logging.getLogger("tg_dc_bridge")
@@ -78,27 +79,30 @@ async def handle_tg_channel_post(update: Update, context: ContextTypes.DEFAULT_T
         if timeout_error:
             formatted_msg += timeout_error
 
-    try:
-        msg_data = MsgData(text=formatted_msg)
-        if author:
-            msg_data.override_sender_name = author
-        if local_file_path and os.path.exists(local_file_path):
-            msg_data.file = local_file_path
-        dc_msg_id = app_ctx.dc_bot.rpc.send_msg(app_ctx.dc_accid, dc_chat_id, msg_data)
-        if dc_msg_id:
-            c_hash = edit_sync_service.get_content_hash(post)
-            database.save_message_map(dc_msg_id, dc_chat_id, post.message_id, tg_channel_id, content_hash=c_hash)
-        rate_limiter.register_edit_timestamp(tg_channel_id, post.message_id)
+    async def _relay():
+        try:
+            msg_data = MsgData(text=formatted_msg)
+            if author:
+                msg_data.override_sender_name = author
+            if local_file_path and os.path.exists(local_file_path):
+                msg_data.file = local_file_path
+            dc_msg_id = app_ctx.dc_bot.rpc.send_msg(app_ctx.dc_accid, dc_chat_id, msg_data)
+            if dc_msg_id:
+                c_hash = edit_sync_service.get_content_hash(post)
+                database.save_message_map(dc_msg_id, dc_chat_id, post.message_id, tg_channel_id, content_hash=c_hash)
+            rate_limiter.register_edit_timestamp(tg_channel_id, post.message_id)
 
-        logger.info(f"Relayed channel post from @{tg_username or tg_channel_id} to DC broadcast {dc_chat_id}")
-    except Exception as e:
-        logger.error(f"Failed to relay channel post to DC: {e}")
-    finally:
-        if local_file_path and os.path.exists(local_file_path):
-            try:
-                os.unlink(local_file_path)
-            except Exception:
-                pass
+            logger.info(f"Relayed channel post from @{tg_username or tg_channel_id} to DC broadcast {dc_chat_id}")
+        except Exception as e:
+            logger.error(f"Failed to relay channel post to DC: {e}")
+        finally:
+            if local_file_path and os.path.exists(local_file_path):
+                try:
+                    os.unlink(local_file_path)
+                except Exception:
+                    pass
+
+    await ordered_queue.enqueue(f"dc:{dc_chat_id}", _relay())
 
 
 async def handle_tg_edited_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -173,27 +177,30 @@ async def handle_tg_edited_channel_post(update: Update, context: ContextTypes.DE
 
     formatted_msg = _truncate(formatted_msg, DC_MAX_MSG_LEN)
 
-    try:
-        old_dc_msg_id = database.get_dc_msg_id(post.message_id, tg_channel_id, dc_chat_id)
-        if old_dc_msg_id:
-            try:
-                edit_sync_service.register_bot_delete(old_dc_msg_id)
-                app_ctx.dc_bot.rpc.delete_messages(app_ctx.dc_accid, [old_dc_msg_id])
-            except Exception as del_e:
-                logger.debug(f"Could not delete old DC msg {old_dc_msg_id} before edit relay: {del_e}")
-                edit_sync_service.consume_bot_delete(old_dc_msg_id)
+    async def _relay_edit():
+        try:
+            old_dc_msg_id = database.get_dc_msg_id(post.message_id, tg_channel_id, dc_chat_id)
+            if old_dc_msg_id:
+                try:
+                    edit_sync_service.register_bot_delete(old_dc_msg_id)
+                    app_ctx.dc_bot.rpc.delete_messages(app_ctx.dc_accid, [old_dc_msg_id])
+                except Exception as del_e:
+                    logger.debug(f"Could not delete old DC msg {old_dc_msg_id} before edit relay: {del_e}")
+                    edit_sync_service.consume_bot_delete(old_dc_msg_id)
 
-        msg_data = MsgData(text=formatted_msg)
-        if author:
-            msg_data.override_sender_name = f"✏️ [Edited] {author}"
-        else:
-            msg_data.override_sender_name = "✏️ [Edited]"
-        dc_sent_id = app_ctx.dc_bot.rpc.send_msg(app_ctx.dc_accid, dc_chat_id, msg_data)
-        if dc_sent_id:
-            database.save_message_map(dc_sent_id, dc_chat_id, post.message_id, tg_channel_id, content_hash=new_hash)
-        logger.info(f"Relayed edited channel post from @{tg_username or tg_channel_id} to DC broadcast {dc_chat_id}")
-    except Exception as e:
-        logger.error(f"Failed to relay edited channel post to DC: {e}")
+            msg_data = MsgData(text=formatted_msg)
+            if author:
+                msg_data.override_sender_name = f"✏️ [Edited] {author}"
+            else:
+                msg_data.override_sender_name = "✏️ [Edited]"
+            dc_sent_id = app_ctx.dc_bot.rpc.send_msg(app_ctx.dc_accid, dc_chat_id, msg_data)
+            if dc_sent_id:
+                database.save_message_map(dc_sent_id, dc_chat_id, post.message_id, tg_channel_id, content_hash=new_hash)
+            logger.info(f"Relayed edited channel post from @{tg_username or tg_channel_id} to DC broadcast {dc_chat_id}")
+        except Exception as e:
+            logger.error(f"Failed to relay edited channel post to DC: {e}")
+
+    await ordered_queue.enqueue(f"dc:{dc_chat_id}", _relay_edit())
 
 
 async def handle_tg_edited_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -269,25 +276,28 @@ async def handle_tg_edited_message(update: Update, context: ContextTypes.DEFAULT
     formatted_msg = _truncate(formatted_msg, DC_MAX_MSG_LEN)
 
     for dc_chat_id in dc_chats:
-        try:
-            old_dc_msg_id = database.get_dc_msg_id(msg.message_id, tg_chat_id, dc_chat_id)
-            if old_dc_msg_id:
-                try:
-                    edit_sync_service.register_bot_delete(old_dc_msg_id)
-                    app_ctx.dc_bot.rpc.delete_messages(app_ctx.dc_accid, [old_dc_msg_id])
-                except Exception as del_e:
-                    logger.debug(f"Could not delete old DC msg {old_dc_msg_id} before edit relay: {del_e}")
-                    edit_sync_service.consume_bot_delete(old_dc_msg_id)
+        async def _relay_edit(dc_chat_id=dc_chat_id):
+            try:
+                old_dc_msg_id = database.get_dc_msg_id(msg.message_id, tg_chat_id, dc_chat_id)
+                if old_dc_msg_id:
+                    try:
+                        edit_sync_service.register_bot_delete(old_dc_msg_id)
+                        app_ctx.dc_bot.rpc.delete_messages(app_ctx.dc_accid, [old_dc_msg_id])
+                    except Exception as del_e:
+                        logger.debug(f"Could not delete old DC msg {old_dc_msg_id} before edit relay: {del_e}")
+                        edit_sync_service.consume_bot_delete(old_dc_msg_id)
 
-            msg_data = MsgData(text=formatted_msg)
-            msg_data.override_sender_name = sender_name
-            await rate_limiter.wait_global_dc()
-            dc_sent_id = app_ctx.dc_bot.rpc.send_msg(app_ctx.dc_accid, dc_chat_id, msg_data)
-            if dc_sent_id:
-                database.save_message_map(dc_sent_id, dc_chat_id, msg.message_id, tg_chat_id, content_hash=new_hash)
-            logger.info(f"Relayed edited TG msg to DC chat {dc_chat_id}")
-        except Exception as e:
-            logger.error(f"Failed to relay edited msg to DC chat {dc_chat_id}: {e}")
+                msg_data = MsgData(text=formatted_msg)
+                msg_data.override_sender_name = sender_name
+                await rate_limiter.wait_global_dc()
+                dc_sent_id = app_ctx.dc_bot.rpc.send_msg(app_ctx.dc_accid, dc_chat_id, msg_data)
+                if dc_sent_id:
+                    database.save_message_map(dc_sent_id, dc_chat_id, msg.message_id, tg_chat_id, content_hash=new_hash)
+                logger.info(f"Relayed edited TG msg to DC chat {dc_chat_id}")
+            except Exception as e:
+                logger.error(f"Failed to relay edited msg to DC chat {dc_chat_id}: {e}")
+
+        await ordered_queue.enqueue(f"dc:{dc_chat_id}", _relay_edit())
 
 
 async def handle_tg_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -368,8 +378,12 @@ async def handle_tg_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             tg_file, file_name, tg_chat_id, update.message.message_id
         )
 
-    try:
-        for dc_chat_id in dc_chats:
+    if local_file_path:
+        for _ in dc_chats:
+            file_tracker.add_ref(local_file_path)
+
+    for dc_chat_id in dc_chats:
+        async def _relay(dc_chat_id=dc_chat_id):
             try:
                 dc_reply_id = None
                 if tg_reply_to_msg_id:
@@ -396,7 +410,6 @@ async def handle_tg_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         logger.warning(f"Quoted message {dc_reply_id} not found in DC chat {dc_chat_id}. Retrying without quote.")
                         msg_data.quoted_message_id = None
                         if not chat_reply_prefix:
-                            tg_reply_to_msg_id = update.message.reply_to_message.message_id
                             replied = update.message.reply_to_message
                             replied_text = replied.text or replied.caption or ""
                             if replied_text:
@@ -416,12 +429,11 @@ async def handle_tg_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 logger.info(f"Relayed TG msg to DC chat {dc_chat_id}")
             except Exception as e:
                 logger.error(f"Failed to relay msg to DC chat {dc_chat_id}: {e}")
-    finally:
-        if local_file_path and os.path.exists(local_file_path):
-            try:
-                os.unlink(local_file_path)
-            except Exception:
-                pass
+            finally:
+                if local_file_path:
+                    file_tracker.release(local_file_path)
+
+        await ordered_queue.enqueue(f"dc:{dc_chat_id}", _relay())
 
 
 async def handle_tg_poll(update: Update, context: ContextTypes.DEFAULT_TYPE):

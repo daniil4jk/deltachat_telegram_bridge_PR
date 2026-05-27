@@ -14,6 +14,7 @@ from channel_history import channel_history_service
 from permissions import permission_checker
 from rate_limiter import rate_limiter
 from relay import message_relay
+from message_queue import ordered_queue
 from shared import get_tg_help_text
 
 from handlers.dc.commands import get_dc_help_text
@@ -229,8 +230,9 @@ def _send_bridge_message(bot, accid, dc_chat_id, msg, tg_chats):
 
             if app_ctx.main_loop:
                 asyncio.run_coroutine_threadsafe(
-                    message_relay.relay_to_tg(tg_chat_id, dc_chat_id, msg.id, file_path, formatted_msg,
-                                              tg_reply_id, is_image, is_video, is_voice, viewtype),
+                    ordered_queue.enqueue(f"tg:{tg_chat_id}",
+                        message_relay.relay_to_tg(tg_chat_id, dc_chat_id, msg.id, file_path, formatted_msg,
+                                                  tg_reply_id, is_image, is_video, is_voice, viewtype)),
                     app_ctx.main_loop
                 )
             bot.logger.info(f"Relayed DC msg {msg.id} to TG chat {tg_chat_id}")
@@ -253,7 +255,8 @@ def _send_channel_subscriber_message(bot, accid, dc_chat_id, msg, dc_ch_info):
         return
     message_relay.register_pending_relay(dc_chat_id, msg.id)
     asyncio.run_coroutine_threadsafe(
-        message_relay.relay_dc_to_tg_channel(tg_channel_id, dc_chat_id, msg.id, channel_text, file_path, viewtype),
+        ordered_queue.enqueue(f"tg_channel:{tg_channel_id}",
+            message_relay.relay_dc_to_tg_channel(tg_channel_id, dc_chat_id, msg.id, channel_text, file_path, viewtype)),
         app_ctx.main_loop
     )
     bot.logger.info(f"Relayed DC msg {msg.id} to DC→TG channel {tg_channel_id}")
