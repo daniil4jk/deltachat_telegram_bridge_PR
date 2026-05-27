@@ -2,7 +2,7 @@
 
 ## Architecture
 
-Single-file bot (`bot.py`, ~4750 lines) plus `database.py` (SQLite wrapper). No tests, lint, or typecheck config. CI is a push-only webhook that notifies a changelog service — no test runs.
+Single-file bot (`bot.py`, ~5025 lines) plus `database.py` (SQLite wrapper). No tests, lint, or typecheck config. CI is a push-only webhook that notifies a changelog service — no test runs.
 
 - **Delta Chat**: `deltabot-cli` (`BotCli`) runs in a background thread via `loop.run_in_executor`
 - **Telegram**: `python-telegram-bot` `Application` with polling
@@ -66,9 +66,18 @@ The Dockerfile uses `python:3.11-slim` and builds with `HOST_UID`/`HOST_GID` fro
 | DC→TG deletion sync | Skipped for channel broadcasts; exempts bot-initiated deletes (edit replacements) |
 | Userbot watchdog | Health check every 60s, auto-restarts on failure |
 
+## DC→TG channel bridge
+
+`/channeladd https://i.delta.chat/#... [TG_target]` on the DC side bridges a DC chat to a Telegram channel.
+- If `TG_target` is provided (username, numeric ID, or invite link) — uses existing channel (bot must be admin)
+- If `TG_target` is omitted and Userbot is configured — creates a private TG channel automatically
+- If neither, returns an error prompting one of the two options
+- `dc_channels` table stores the mapping; `message_map` tracks individual messages for edit/deletion sync
+- `/channels dc` lists DC→TG bridges; `/channels tg` lists TG→DC bridges
+
 ## Database (`bridge.db`)
 
-Auto-created on import. Schema has migrations via `ALTER TABLE ADD COLUMN` with try/except. Tables: `bridges`, `config`, `message_map`, `polls`, `channels`, `admins`, `transport_stats`. Old message map rows pruned to 10K on init; periodic cleanup every hour.
+Auto-created on import. Schema has migrations via `ALTER TABLE ADD COLUMN` with try/except. Tables: `bridges`, `config`, `message_map`, `polls`, `channels`, `dc_channels`, `admins`, `transport_stats`. Old message map rows pruned to 10K on init; periodic cleanup every hour.
 
 ## Notable constraints
 

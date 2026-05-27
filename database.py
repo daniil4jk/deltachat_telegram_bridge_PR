@@ -124,6 +124,26 @@ def init_db():
         except Exception:
             pass
 
+        # DC -> TG channel bridges (reverse direction)
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS dc_channels (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                dc_chat_id INTEGER NOT NULL UNIQUE,
+                dc_chat_name TEXT,
+                tg_channel_id INTEGER,
+                tg_invite_link TEXT,
+                created_at INTEGER DEFAULT (strftime('%s','now')),
+                created_by_tg_id INTEGER
+            )
+        ''')
+        # Migration: add tg_invite_link to dc_channels
+        try:
+            col_names = [c[1] for c in cursor.execute("PRAGMA table_info(dc_channels)").fetchall()]
+            if 'tg_invite_link' not in col_names:
+                cursor.execute("ALTER TABLE dc_channels ADD COLUMN tg_invite_link TEXT")
+        except Exception:
+            pass
+
         # Transport statistics
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS transport_stats (
@@ -215,6 +235,8 @@ def count_bridges_for_tg(tg_chat_id: int) -> int:
         cursor.execute("SELECT COUNT(*) FROM bridges WHERE tg_chat_id = ?", (tg_chat_id,))
         count = cursor.fetchone()[0]
         cursor.execute("SELECT COUNT(*) FROM channels WHERE tg_channel_id = ?", (tg_chat_id,))
+        count += cursor.fetchone()[0]
+        cursor.execute("SELECT COUNT(*) FROM dc_channels WHERE tg_channel_id = ?", (tg_chat_id,))
         count += cursor.fetchone()[0]
         conn.close()
         return count
@@ -637,6 +659,86 @@ def get_channel_by_dc_chat_id(dc_chat_id: int) -> dict | None:
         conn.close()
         return dict(row) if row else None
 
+
+# ---------------------------------------------------------
+# DC -> TG CHANNEL BRIDGING
+# ---------------------------------------------------------
+
+def add_dc_channel(dc_chat_id: int, dc_chat_name: str | None = None, tg_channel_id: int | None = None, tg_invite_link: str | None = None, created_by_tg_id: int | None = None) -> int | None:
+    """Add a DC chat -> TG channel mapping. Returns the row id."""
+    with _lock:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                "INSERT INTO dc_channels (dc_chat_id, dc_chat_name, tg_channel_id, tg_invite_link, created_by_tg_id) VALUES (?, ?, ?, ?, ?)",
+                (dc_chat_id, dc_chat_name, tg_channel_id, tg_invite_link, created_by_tg_id)
+            )
+            conn.commit()
+            return cursor.lastrowid
+        except sqlite3.IntegrityError:
+            return None
+        finally:
+            conn.close()
+
+def get_dc_channel_by_dc_chat_id(dc_chat_id: int) -> dict | None:
+    """Get a dc_channels row by DC chat ID."""
+    with _lock:
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM dc_channels WHERE dc_chat_id = ?", (dc_chat_id,))
+        row = cursor.fetchone()
+        conn.close()
+        return dict(row) if row else None
+
+def get_dc_channel_by_id(channel_id: int) -> dict | None:
+    """Get a dc_channels row by its autoincrement id."""
+    with _lock:
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM dc_channels WHERE id = ?", (channel_id,))
+        row = cursor.fetchone()
+        conn.close()
+        return dict(row) if row else None
+
+def get_all_dc_channels() -> list[dict]:
+    """Return all DC->TG channel rows."""
+    with _lock:
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM dc_channels ORDER BY id")
+        rows = cursor.fetchall()
+        conn.close()
+        return [dict(r) for r in rows]
+
+def remove_dc_channel(dc_chat_id: int) -> int | None:
+    """Remove a DC->TG channel by DC chat ID, return tg_channel_id."""
+    with _lock:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute("SELECT tg_channel_id FROM dc_channels WHERE dc_chat_id = ?", (dc_chat_id,))
+        row = cursor.fetchone()
+        tg_channel_id = row[0] if row else None
+        cursor.execute("DELETE FROM dc_channels WHERE dc_chat_id = ?", (dc_chat_id,))
+        cursor.execute("DELETE FROM message_map WHERE dc_chat_id = ?", (dc_chat_id,))
+        conn.commit()
+        conn.close()
+        return tg_channel_id
+
+def update_dc_channel_tg_info(dc_chat_id: int, tg_channel_id: int, tg_invite_link: str | None = None):
+    """Set the TG channel ID and invite link for a DC->TG bridge."""
+    with _lock:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE dc_channels SET tg_channel_id = ?, tg_invite_link = COALESCE(?, tg_invite_link) WHERE dc_chat_id = ?",
+            (tg_channel_id, tg_invite_link, dc_chat_id)
+        )
+        conn.commit()
+        conn.close()
 
 # ---------------------------------------------------------
 # ADMIN MANAGEMENT
